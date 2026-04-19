@@ -190,8 +190,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 
 # --- 4. Advanced Analysis (Chunking) ---
-def analyze_video_chunked(video_path, drive_path, url_input, progress=gr.Progress()):
-    if url_input and url_input.strip():
 def analyze_video_chunked(upload_method, video_path, drive_path, url_input, progress=gr.Progress()):
     actual_video_path = None
     if upload_method == "วางลิงก์จากเว็บ (URL)" and url_input and url_input.strip():
@@ -207,11 +205,9 @@ def analyze_video_chunked(upload_method, video_path, drive_path, url_input, prog
     elif upload_method == "เลือกจาก Google Drive":
         actual_video_path = drive_path.strip() if drive_path and drive_path.strip() else None
     else:
-        actual_video_path = drive_path.strip() if drive_path and drive_path.strip() else video_path
         actual_video_path = video_path
         
     if not actual_video_path or not os.path.exists(actual_video_path):
-        return "กรุณาอัปโหลดวิดีโอ, ระบุพาธไฟล์ หรือใส่ลิงก์ให้ถูกต้อง", gr.update(choices=[], visible=False), {}, {}, ""
         return "กรุณาอัปโหลดวิดีโอ, ระบุพาธไฟล์ หรือใส่ลิงก์ให้ถูกต้องตามช่องทางที่เลือก", gr.update(choices=[], visible=False), {}, {}, ""
     
     audio_path = f"temp_audio_{int(time.time())}.wav"
@@ -588,15 +584,6 @@ with gr.Blocks(title="The Ultimate Pro AI Video Agent", theme=gr.themes.Soft()) 
         drive_btn.click(fn=mount_google_drive, outputs=[drive_status])
 
     with gr.Tab("1. Analyze Video (วิเคราะห์และดึงเสียงต้นแบบ)"):
-        video_input = gr.Video(label="อัปโหลดวิดีโอเต็ม (1 ชม. ได้ ไม่จำกัดขนาด)")
-        gr.Markdown("💡 **ทริคสำหรับไฟล์ขนาดใหญ่ (1 ชม.+)**: ระบบอัปโหลดผ่านเว็บอาจไม่แสดงสถานะเป็น MB ที่ชัดเจน แนะนำให้อัปโหลดวิดีโอลง Google Drive แล้วนำ **พาธไฟล์ (Path)** มาวางในช่องด้านล่าง จะรวดเร็วและเสถียรกว่ามาก!")
-        with gr.Row():
-            video_input = gr.Video(label="อัปโหลดวิดีโอจากเครื่อง")
-            with gr.Column():
-                with gr.Row():
-                    drive_path_input = gr.Dropdown(label="📂 เลือกไฟล์จาก Google Drive", choices=get_drive_videos(), allow_custom_value=True, scale=4)
-                    refresh_drive_btn = gr.Button("🔄 โหลดชื่อไฟล์", scale=1)
-                url_input = gr.Textbox(label="🌐 หรือวางลิงก์วิดีโอจากเว็บ (YouTube, TikTok ฯลฯ)")
         upload_method = gr.Radio(
             label="เลือกวิธีการนำเข้าวิดีโอ", 
             choices=["อัปโหลดจากเครื่อง (Local)", "เลือกจาก Google Drive", "วางลิงก์จากเว็บ (URL)"], 
@@ -689,7 +676,6 @@ with gr.Blocks(title="The Ultimate Pro AI Video Agent", theme=gr.themes.Soft()) 
 
     analyze_btn.click(
         fn=analyze_video_chunked,
-        inputs=[video_input, drive_path_input, url_input],
         inputs=[upload_method, video_input, drive_path_input, url_input],
         outputs=[analysis_status, topic_dropdown, topics_state, ref_audio_state, current_video_path]
     )
