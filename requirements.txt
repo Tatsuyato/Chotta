@@ -9,5 +9,6 @@ mediapipe
 huggingface_hub
 hf_transfer
 yt-dlp
+demucs
 # ไลบรารีสำหรับ F5-TTS-TH-V2
 f5-tts-th
