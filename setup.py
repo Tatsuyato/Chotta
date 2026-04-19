@@ -1,0 +1,19 @@
+# Helper script if user wants to run without notebook
+import subprocess
+import sys
+
+def run_cmd(cmd):
+    print(f"Running: {cmd}")
+    subprocess.check_call(cmd, shell=True)
+
+if __name__ == "__main__":
+    print("Installing required specific versions of PyTorch...")
+    run_cmd("pip install torch==2.4.0+cu124 torchvision==0.19.0+cu124 torchaudio==2.4.0+cu124 --extra-index-url https://download.pytorch.org/whl/cu124")
+    
+    print("Installing requirements from requirements.txt...")
+    run_cmd("pip install -r requirements.txt")
+    
+    print("Pre-downloading VIZINTZOR/F5-TTS-TH-V2 model...")
+    run_cmd("huggingface-cli download VIZINTZOR/F5-TTS-TH-V2")
+    
+    print("Setup complete! You can now run `python app.py`.")
