@@ -14,6 +14,7 @@ if __name__ == "__main__":
     run_cmd("pip install -r requirements.txt")
     
     print("Pre-downloading VIZINTZOR/F5-TTS-TH-V2 model...")
-    run_cmd("huggingface-cli download VIZINTZOR/F5-TTS-TH-V2")
+    # ใช้ Python API เพื่อหลีกเลี่ยงปัญหาหน้าต่างแจ้งเตือน (Interactive Prompt [Y/n]) ที่ทำให้ Colab ค้าง
+    run_cmd("python -c \"from huggingface_hub import snapshot_download; snapshot_download('VIZINTZOR/F5-TTS-TH-V2')\"")
     
     print("Setup complete! You can now run `python app.py`.")

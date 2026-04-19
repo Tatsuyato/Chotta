@@ -12,6 +12,10 @@ import soundfile as sf
 import re
 from faster_whisper import WhisperModel
 from transformers import AutoTokenizer, AutoModelForCausalLM
+try:
+    import yt_dlp
+except ImportError:
+    pass
 
 # Try to import F5-TTS-TH
 try:
@@ -41,6 +45,11 @@ def safe_remove(path):
 
 def mount_google_drive():
     try:
+        # ตรวจสอบก่อนว่ามีการเมานท์ Drive ไว้แล้วหรือไม่
+        if os.path.exists('/content/drive'):
+            os.makedirs('/content/drive/MyDrive/AI_Videos', exist_ok=True)
+            return "✅ Google Drive ถูกเชื่อมต่อไว้แล้ว! วิดีโอจะถูกบันทึกที่โฟลเดอร์ AI_Videos"
+            
         from google.colab import drive
         drive.mount('/content/drive')
         os.makedirs('/content/drive/MyDrive/AI_Videos', exist_ok=True)
@@ -48,6 +57,8 @@ def mount_google_drive():
     except ImportError:
         return "⚠️ ไม่สามารถเชื่อมต่อ Google Drive ได้ (ฟีเจอร์นี้ใช้ได้บน Google Colab เท่านั้น)"
     except Exception as e:
+        if "'NoneType' object has no attribute 'kernel'" in str(e):
+            return "⚠️ กรุณาเมานท์ Google Drive จากเซลล์ในสมุดโน้ต (Notebook) โดยตรงก่อน (ไม่สามารถเมานท์ผ่านปุ่มนี้ได้เมื่อรันด้วยคำสั่ง python app.py)"
         return f"⚠️ เกิดข้อผิดพลาด: {str(e)}"
 
 # --- 2. Smart Auto-Crop (Face Tracking) ---
@@ -158,9 +169,22 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 
 # --- 4. Advanced Analysis (Chunking) ---
-def analyze_video_chunked(video_path, progress=gr.Progress()):
-    if not video_path:
-        return "กรุณาอัปโหลดวิดีโอ", gr.update(choices=[], visible=False), {}, {}
+def analyze_video_chunked(video_path, drive_path, url_input, progress=gr.Progress()):
+    if url_input and url_input.strip():
+        progress(0, desc="🌐 กำลังดาวน์โหลดวิดีโอจากลิงก์...")
+        output_filename = f"dl_video_{int(time.time())}.mp4"
+        ydl_opts = {'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best', 'outtmpl': output_filename, 'quiet': True}
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url_input.strip()])
+            actual_video_path = output_filename
+        except Exception as e:
+            return f"เกิดข้อผิดพลาดในการดาวน์โหลดวิดีโอ: {str(e)}", gr.update(choices=[], visible=False), {}, {}, ""
+    else:
+        actual_video_path = drive_path.strip() if drive_path and drive_path.strip() else video_path
+        
+    if not actual_video_path or not os.path.exists(actual_video_path):
+        return "กรุณาอัปโหลดวิดีโอ, ระบุพาธไฟล์ หรือใส่ลิงก์ให้ถูกต้อง", gr.update(choices=[], visible=False), {}, {}, ""
     
     audio_path = f"temp_audio_{int(time.time())}.wav"
     ref_audio_path = f"auto_ref_{int(time.time())}.wav"
@@ -168,6 +192,7 @@ def analyze_video_chunked(video_path, progress=gr.Progress()):
     try:
         progress(0.05, desc="🎵 1/3 กำลังสกัดเสียงจากวิดีโอ...")
         subprocess.run(["ffmpeg", "-y", "-i", video_path, "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", audio_path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["ffmpeg", "-y", "-i", actual_video_path, "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", audio_path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
         device = "cuda" if torch.cuda.is_available() else "cpu"
         compute_type = "float16" if torch.cuda.is_available() else "int8"
@@ -263,15 +288,65 @@ Transcript Segment:
         # ส่งคืนค่ากลับไปเก็บใน UI
         ref_state = {"path": ref_audio_path if os.path.exists(ref_audio_path) else "", "text": ref_text}
 
-        return f"วิเคราะห์เสร็จสิ้น พบ {len(all_topics)} หัวข้อตลอดความยาวคลิป!", gr.update(choices=choices, visible=True), topics_dict, ref_state
+        return f"วิเคราะห์เสร็จสิ้น พบ {len(all_topics)} หัวข้อตลอดความยาวคลิป!", gr.update(choices=choices, visible=True), topics_dict, ref_state, actual_video_path
 
     except Exception as e:
-        return f"เกิดข้อผิดพลาด: {str(e)}", gr.update(choices=[], visible=False), {}, {}
+        return f"เกิดข้อผิดพลาด: {str(e)}", gr.update(choices=[], visible=False), {}, {}, ""
     finally:
         safe_remove(audio_path)
 
-# --- 5. Main Process Video (With Garbage Collection & Progress) ---
+# --- 5. Test Voice Cloning ---
+def test_voice_clone(ref_state, custom_ref_audio, custom_ref_text, test_script, progress=gr.Progress()):
+    actual_ref_audio = custom_ref_audio if custom_ref_audio else ref_state.get("path", "")
+    actual_ref_text = custom_ref_text if custom_ref_text else ref_state.get("text", "")
+    
+    if not actual_ref_audio or not actual_ref_text:
+        return None, "⚠️ กรุณาอัปโหลดเสียงต้นแบบและใส่ข้อความที่พูดในเสียงต้นแบบ หรือทำการวิเคราะห์วิดีโอใน Tab 1 ก่อน"
+        
+    if not test_script or not test_script.strip():
+        return None, "⚠️ กรุณาใส่ข้อความสำหรับทดสอบเสียง"
+        
+    audio_path = f"test_voice_{int(time.time())}.wav"
+    
+    try:
+        if F5_AVAILABLE:
+            progress(0.5, desc="🎙️ กำลังทดสอบโคลนเสียง (F5-TTS)...")
+            tts = TTS(model="v2")
+            wav = tts.infer(
+                ref_audio=actual_ref_audio,
+                ref_text=actual_ref_text,
+                gen_text=test_script,
+                step=32,
+                cfg=2.0,
+                speed=1.0
+            )
+            sf.write(audio_path, wav, 24000)
+            del tts
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        else:
+            progress(0.5, desc="🎙️ กำลังสร้างเสียงทดสอบ (MMS-TTS)...")
+            from transformers import VitsModel, AutoProcessor
+            processor = AutoProcessor.from_pretrained("facebook/mms-tts-tha")
+            tts_model = VitsModel.from_pretrained("facebook/mms-tts-tha")
+            inputs = processor(text=test_script, return_tensors="pt")
+            with torch.no_grad():
+                audio_output = tts_model(**inputs).waveform
+            scipy.io.wavfile.write(audio_path, rate=tts_model.config.sampling_rate, data=audio_output[0].numpy())
+            del tts_model
+            del processor
+            gc.collect()
+            
+        return audio_path, "✅ ทดสอบเสียงสำเร็จ! คุณสามารถกดฟังได้เลย"
+    except Exception as e:
+        return None, f"⚠️ เกิดข้อผิดพลาด: {str(e)}"
+
+# --- 6. Main Process Video (With Garbage Collection & Progress) ---
 def process_video_local(video_path, selected_topic_key, topics_dict, orientation, resolution, bgm_path, bgm_vol, font_color, font_size, save_to_drive, ref_state, custom_ref_audio, custom_ref_text, watermark_path, b_roll_path, progress=gr.Progress()):
+    if not video_path or not os.path.exists(video_path):
+        return None, "ไม่พบไฟล์วิดีโอต้นฉบับ กรุณากลับไปที่ Tab 1 เพื่ออัปโหลดและวิเคราะห์วิดีโอใหม่อีกครั้ง"
+        
     if not selected_topic_key or not topics_dict:
         return None, "กรุณาวิเคราะห์วิดีโอและเลือกหัวข้อก่อน"
     
@@ -439,7 +514,7 @@ def process_video_local(video_path, selected_topic_key, topics_dict, orientation
         for file in temp_files:
             safe_remove(file)
 
-# --- 6. Gallery Management ---
+# --- 7. Gallery Management ---
 def get_generated_videos():
     videos = []
     for f in os.listdir('.'):
@@ -486,10 +561,18 @@ with gr.Blocks(title="The Ultimate Pro AI Video Agent", theme=gr.themes.Soft()) 
 
     with gr.Tab("1. Analyze Video (วิเคราะห์และดึงเสียงต้นแบบ)"):
         video_input = gr.Video(label="อัปโหลดวิดีโอเต็ม (1 ชม. ได้ ไม่จำกัดขนาด)")
+        gr.Markdown("💡 **ทริคสำหรับไฟล์ขนาดใหญ่ (1 ชม.+)**: ระบบอัปโหลดผ่านเว็บอาจไม่แสดงสถานะเป็น MB ที่ชัดเจน แนะนำให้อัปโหลดวิดีโอลง Google Drive แล้วนำ **พาธไฟล์ (Path)** มาวางในช่องด้านล่าง จะรวดเร็วและเสถียรกว่ามาก!")
+        with gr.Row():
+            video_input = gr.Video(label="อัปโหลดวิดีโอจากเครื่อง")
+            with gr.Column():
+                drive_path_input = gr.Textbox(label="📂 ใส่พาธไฟล์จาก Google Drive (เช่น /content/drive/MyDrive/ep1.mp4)")
+                url_input = gr.Textbox(label="🌐 หรือวางลิงก์วิดีโอจากเว็บ (YouTube, TikTok ฯลฯ)")
+            
         analyze_btn = gr.Button("🧠 วิเคราะห์วิดีโอด้วย Local AI", variant="primary")
         analysis_status = gr.Textbox(label="สถานะการประมวลผล", interactive=False)
         topics_state = gr.State({})
         ref_audio_state = gr.State({})
+        current_video_path = gr.State("")
         
     with gr.Tab("2. Generate Pro Video (สร้างคลิปสั้น)"):
         topic_dropdown = gr.Dropdown(label="เลือกหัวข้อคลิปที่น่าสนใจ", choices=[], visible=False)
@@ -511,6 +594,13 @@ with gr.Blocks(title="The Ultimate Pro AI Video Agent", theme=gr.themes.Soft()) 
                 
             custom_ref_audio = gr.Audio(label="อัปโหลดเสียงต้นแบบ (Custom Voice Cloning)", type="filepath")
             custom_ref_text = gr.Textbox(label="ข้อความที่พูดในเสียงต้นแบบ (ภาษาไทย)")
+            
+            with gr.Row():
+                test_gen_text = gr.Textbox(label="ข้อความสำหรับทดสอบเสียง (Test Script)", value="สวัสดีครับ นี่คือเสียงทดสอบระบบโคลนเสียงครับ", scale=3)
+                test_voice_btn = gr.Button("🎧 ทดสอบเสียงโคลน", scale=1)
+            with gr.Row():
+                test_voice_output = gr.Audio(label="ผลลัพธ์เสียงทดสอบ", interactive=False)
+                test_voice_status = gr.Textbox(label="สถานะทดสอบ", interactive=False)
 
         save_drive_checkbox = gr.Checkbox(label="บันทึกลง Google Drive อัตโนมัติ", value=True)
         generate_btn = gr.Button("🚀 สร้างวิดีโอขั้นสูง (พร้อม Progress Bar)", variant="primary")
@@ -538,14 +628,20 @@ with gr.Blocks(title="The Ultimate Pro AI Video Agent", theme=gr.themes.Soft()) 
         
     analyze_btn.click(
         fn=analyze_video_chunked,
-        inputs=[video_input],
-        outputs=[analysis_status, topic_dropdown, topics_state, ref_audio_state]
+        inputs=[video_input, drive_path_input, url_input],
+        outputs=[analysis_status, topic_dropdown, topics_state, ref_audio_state, current_video_path]
     )
     
+    test_voice_btn.click(
+        fn=test_voice_clone,
+        inputs=[ref_audio_state, custom_ref_audio, custom_ref_text, test_gen_text],
+        outputs=[test_voice_output, test_voice_status]
+    )
+
     generate_btn.click(
         fn=process_video_local,
         inputs=[
-            video_input, topic_dropdown, topics_state, 
+            current_video_path, topic_dropdown, topics_state, 
             orientation_radio, resolution_dropdown, bgm_input, bgm_vol, sub_color, sub_size, save_drive_checkbox, 
             ref_audio_state, custom_ref_audio, custom_ref_text, watermark_input, b_roll_input
         ],

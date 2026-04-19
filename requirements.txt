@@ -7,5 +7,6 @@ opencv-python
 soundfile
 mediapipe
 huggingface_hub
+yt-dlp
 # ไลบรารีสำหรับ F5-TTS-TH-V2
 f5-tts-th
