@@ -1,6 +1,9 @@
 import gradio as gr
 import subprocess
 import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' # ซ่อนแจ้งเตือน Warning สีแดงจาก TensorFlow/JAX
+os.environ['XLA_FLAGS'] = '--xla_gpu_cuda_data_dir=/usr/local/cuda'
+import sys
 import json
 import time
 import torch
@@ -35,6 +38,17 @@ def format_ass_time(seconds):
     s = int(seconds % 60)
     cs = int((seconds % 1) * 100)
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+def time_to_sec(time_str):
+    try:
+        parts = str(time_str).split(':')
+        if len(parts) == 3:
+            return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+        elif len(parts) == 2:
+            return float(parts[0]) * 60 + float(parts[1])
+        return float(parts[0])
+    except:
+        return 0.0
 
 def safe_remove(path):
     try:
@@ -95,7 +109,6 @@ def get_smart_crop_center(video_path, target_ratio=9/16, progress=gr.Progress())
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
-    mp_face_detection = mp.solutions.face_detection
     face_centers_x = []
     
     progress(0, desc="🔎 สแกนหาใบหน้าในวิดีโอ (Smart Crop)...")
@@ -240,7 +253,7 @@ def analyze_video_chunked(upload_method, video_path, drive_path, url_input, isol
         if isolate_vocal:
             progress(0.1, desc="🧹 กำลังสกัดเฉพาะเสียงพูด (ลบดนตรี/เสียงรบกวนด้วย AI)... อาจใช้เวลาสักครู่")
             try:
-                subprocess.run(["demucs", "--two-stems=vocals", audio_path], check=True)
+                subprocess.run([sys.executable, "-m", "demucs", "--two-stems=vocals", audio_path], check=True)
                 base_name = os.path.splitext(os.path.basename(audio_path))[0]
                 clean_audio_path = os.path.join("separated", "htdemucs", base_name, "vocals.wav")
                 if os.path.exists(clean_audio_path):
@@ -314,21 +327,28 @@ def analyze_video_chunked(upload_method, video_path, drive_path, url_input, isol
         
         for idx, chunk in enumerate(chunks):
             progress(0.6 + (0.3 * (idx/len(chunks))), desc=f"🔎 กำลังวิเคราะห์คลิปส่วนที่ {idx+1}/{len(chunks)}...")
-            prompt = f"""You are an expert Thai video editor. Read this transcript segment and find 1 to 2 interesting highlights to make short vertical videos.
-Respond ONLY in valid JSON format exactly like this:
+            prompt = f"""คุณคือครีเอเตอร์นักตัดต่อวิดีโอสั้นและผู้กำกับมือทองชาวไทย อ่านสคริปต์ต่อไปนี้และสร้าง "เนื้อเรื่อง" ที่น่าสนใจที่สุด 1 ถึง 2 เรื่องเพื่อทำเป็นคลิปสั้น (TikTok/Reels)
+โดยคุณสามารถ "เลือกตัดเอาหลายๆ ช่วงเวลาที่เกี่ยวข้องกัน" (Clips) จากในสคริปต์มาประกอบร่างกันเป็นคลิปเดียวได้ เพื่อให้เนื้อหากระชับและน่าติดตาม
+กรุณาตอบกลับเป็น JSON เท่านั้น โดยห้ามมีคำอธิบายอื่นใด รูปแบบตามนี้เป๊ะๆ:
 {{
     "topics": [
-        {{"title": "ชื่อคลิปสั้นๆ", "start_time": "00:00:10", "end_time": "00:01:00", "voiceover_script": "บทพากย์สั้นๆ สำหรับช่วงนี้ (ภาษาไทย)"}}
+        {{
+            "title": "ตั้งชื่อคลิปให้น่าสนใจ (ภาษาไทย)", 
+            "clips": [
+                {{"start_time": "00:00:10", "end_time": "00:00:25", "voiceover_script": "บทพากย์สำหรับฉากที่ 1 (ภาษาไทย)"}},
+                {{"start_time": "00:01:10", "end_time": "00:01:30", "voiceover_script": "บทพากย์สำหรับฉากที่ 2 (ภาษาไทย)"}}
+            ]
+        }}
     ]
 }}
-Transcript Segment:
+สคริปต์วิดีโอ:
 {chunk}
 """
-            messages = [{"role": "system", "content": "You are a helpful assistant. Output ONLY valid JSON."}, {"role": "user", "content": prompt}]
+            messages = [{"role": "system", "content": "You are a helpful assistant. Output ONLY valid JSON in Thai."}, {"role": "user", "content": prompt}]
             text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             inputs = tokenizer([text], return_tensors="pt").to(llm_model.device)
             
-            outputs = llm_model.generate(**inputs, max_new_tokens=1024, temperature=0.7)
+            outputs = llm_model.generate(**inputs, max_new_tokens=2048, temperature=0.7)
             response_text = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
             
             try:
@@ -353,8 +373,16 @@ Transcript Segment:
         if not all_topics:
             raise ValueError("AI ไม่สามารถหาหัวข้อที่น่าสนใจในวิดีโอได้ (Invalid JSON or no topics)")
 
-        choices = [f"{t['title']} ({t['start_time']} - {t['end_time']})" for t in all_topics]
-        topics_dict = {f"{t['title']} ({t['start_time']} - {t['end_time']})": t for t in all_topics}
+        choices = []
+        topics_dict = {}
+        for i, t in enumerate(all_topics):
+            title = t.get('title', 'ไม่ระบุชื่อหัวข้อ')
+            clips = t.get('clips', [])
+            time_str = f"({len(clips)} ฉากประกอบกัน เริ่ม {clips[0].get('start_time', '00:00:00')})" if clips else f"({t.get('start_time', '00:00:00')} - {t.get('end_time', '00:00:00')})"
+            
+            key = f"[{i+1}] {title} {time_str}"
+            choices.append(key)
+            topics_dict[key] = t
         
         # ส่งคืนค่ากลับไปเก็บใน UI โดยอัปเดต Dropdown เลือกเสียง
         return f"วิเคราะห์เสร็จสิ้น พบ {len(all_topics)} หัวข้อตลอดความยาวคลิป!", gr.update(choices=choices, visible=True), topics_dict, gr.update(choices=choices_ref, value=choices_ref[0] if choices_ref else None, visible=True), ref_candidates, actual_video_path
@@ -381,7 +409,7 @@ def test_voice_clone(selected_auto_ref, ref_candidates_dict, custom_ref_audio, c
     if isolate_custom_ref and actual_ref_audio:
         progress(0.2, desc="🧹 กำลังสกัดเฉพาะเสียงพูดจากเสียงต้นแบบ (Demucs)...")
         try:
-            subprocess.run(["demucs", "--two-stems=vocals", actual_ref_audio], check=True)
+            subprocess.run([sys.executable, "-m", "demucs", "--two-stems=vocals", actual_ref_audio], check=True)
             base_name = os.path.splitext(os.path.basename(actual_ref_audio))[0]
             clean_audio_path = os.path.join("separated", "htdemucs", base_name, "vocals.wav")
             if os.path.exists(clean_audio_path):
@@ -440,9 +468,20 @@ def process_video_local(video_path, selected_topic_key, topics_dict, orientation
     
     try:
         topic_info = topics_dict[selected_topic_key]
-        start_time = topic_info['start_time']
-        end_time = topic_info['end_time']
-        script = topic_info['voiceover_script']
+        
+        clips = topic_info.get('clips', [])
+        if not clips and 'start_time' in topic_info:
+            clips = [{'start_time': topic_info['start_time'], 'end_time': topic_info['end_time']}]
+            
+        if not clips:
+            raise ValueError("ไม่พบข้อมูลเวลาเริ่มต้นและสิ้นสุดของวิดีโอ (Invalid Topic Data)")
+            
+        # รวบรวมบทพากย์จากแต่ละฉากมาต่อกัน หากใช้รูปแบบใหม่
+        script_parts = [c.get('voiceover_script', '').strip() for c in clips if c.get('voiceover_script')]
+        if script_parts:
+            script = " ".join(script_parts)
+        else:
+            script = topic_info.get('voiceover_script', '')
         
         audio_path = f"temp_voice_{int(time.time())}.wav"
         temp_files.append(audio_path)
@@ -461,7 +500,7 @@ def process_video_local(video_path, selected_topic_key, topics_dict, orientation
             if isolate_custom_ref:
                 progress(0.15, desc="🧹 กำลังสกัดเฉพาะเสียงพูดจากเสียงต้นแบบ (Demucs)...")
                 try:
-                    subprocess.run(["demucs", "--two-stems=vocals", actual_ref_audio], check=True)
+                    subprocess.run([sys.executable, "-m", "demucs", "--two-stems=vocals", actual_ref_audio], check=True)
                     base_name = os.path.splitext(os.path.basename(actual_ref_audio))[0]
                     clean_audio_path = os.path.join("separated", "htdemucs", base_name, "vocals.wav")
                     if os.path.exists(clean_audio_path):
@@ -503,11 +542,32 @@ def process_video_local(video_path, selected_topic_key, topics_dict, orientation
         temp_files.append(subs_path)
 
         # 3. ตัดและปรับสัดส่วนวิดีโอ (Auto-Crop / Blur Background)
-        progress(0.5, desc="✂️ 3/4 กำลังตัดและปรับสัดส่วนวิดีโอ (Auto-Crop / Blur Background)...")
+        progress(0.5, desc="✂️ 3/4 กำลังตัดประกอบวิดีโอ (Video Assembly) และปรับสัดส่วน...")
         temp_subclip = f"temp_sub_{int(time.time())}.mp4"
         temp_files.append(temp_subclip)
         
-        subprocess.run(["ffmpeg", "-y", "-i", video_path, "-ss", start_time, "-to", end_time, "-c:v", "copy", "-c:a", "copy", temp_subclip], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if len(clips) == 1:
+            st = clips[0]['start_time']
+            et = clips[0]['end_time']
+            subprocess.run(["ffmpeg", "-y", "-i", video_path, "-ss", str(st), "-to", str(et), "-c:v", "copy", "-c:a", "copy", temp_subclip], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            filter_complex_concat = ""
+            concat_inputs = ""
+            for idx, clip in enumerate(clips):
+                st_sec = time_to_sec(clip['start_time'])
+                et_sec = time_to_sec(clip['end_time'])
+                filter_complex_concat += f"[0:v]trim=start={st_sec}:end={et_sec},setpts=PTS-STARTPTS[v{idx}];"
+                filter_complex_concat += f"[0:a]atrim=start={st_sec}:end={et_sec},asetpts=PTS-STARTPTS[a{idx}];"
+                concat_inputs += f"[v{idx}][a{idx}]"
+                
+            filter_complex_concat += f"{concat_inputs}concat=n={len(clips)}:v=1:a=1[v_out][a_out]"
+            
+            subprocess.run([
+                "ffmpeg", "-y", "-i", video_path,
+                "-filter_complex", filter_complex_concat,
+                "-map", "[v_out]", "-map", "[a_out]",
+                "-c:v", "libx264", "-preset", "fast", "-c:a", "aac", temp_subclip
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         if orientation == "Vertical (9:16)":
             if vertical_mode == "Blur Background (ขอบเบลอ)":
@@ -655,7 +715,7 @@ def delete_video(video_path):
         return f"เกิดข้อผิดพลาด: {str(e)}", gr.update()
 
 # --- Gradio UI ---
-with gr.Blocks(title="The Ultimate Pro AI Video Agent", theme=gr.themes.Soft()) as app:
+with gr.Blocks(title="The Ultimate Pro AI Video Agent") as app:
     gr.Markdown("# 🎬 The Ultimate Pro AI Video Agent (F5-TTS 🇹🇭)")
     gr.Markdown("🌟 **[New!]** อัปเกรดระบบ **AI อ่านคลิปได้จบคลิป (1 ชม+)** มี **Progress Bar แสดงสถานะเรียลไทม์**, **ล้างไฟล์ขยะออโต้**, และตั้งค่า **สี/ขนาดซับไตเติ้ล** ได้แล้ว!")
     
