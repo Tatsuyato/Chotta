@@ -16,13 +16,6 @@ try:
     import yt_dlp
 except ImportError:
     pass
-    
-try:
-    import mediapipe as mp
-    import mediapipe.solutions.face_detection as mp_face_detection
-    MP_AVAILABLE = True
-except ImportError:
-    MP_AVAILABLE = False
 
 # Try to import F5-TTS-TH
 try:
@@ -91,7 +84,6 @@ def mount_google_drive():
 
 # --- 2. Smart Auto-Crop (Face Tracking) ---
 def get_smart_crop_center(video_path, target_ratio=9/16, progress=gr.Progress()):
-    if not MP_AVAILABLE:
     try:
         import mediapipe as mp
     except ImportError:
@@ -240,7 +232,6 @@ def analyze_video_chunked(upload_method, video_path, drive_path, url_input, isol
     
     audio_path = f"temp_audio_{int(time.time())}.wav"
     original_audio_path = audio_path
-    ref_audio_path = f"auto_ref_{int(time.time())}.wav"
     
     try:
         progress(0.05, desc="🎵 1/3 กำลังสกัดเสียงจากวิดีโอ...")
@@ -271,7 +262,6 @@ def analyze_video_chunked(upload_method, video_path, drive_path, url_input, isol
         
         transcript = ""
         segments = []
-        ref_segment = None
         valid_ref_segments = []
         total_duration = info.duration
         
@@ -283,30 +273,20 @@ def analyze_video_chunked(upload_method, video_path, drive_path, url_input, isol
             percent = segment.end / total_duration if total_duration > 0 else 0
             progress(0.2 + (0.2 * percent), desc=f"📝 กำลังถอดเสียง... {format_time(segment.end)} / {format_time(total_duration)}")
             
-            # หาช่วงที่ยาว 4-10 วินาทีเพื่อใช้เป็น Reference สำหรับ F5-TTS
             # เก็บตัวเลือกเสียงอ้างอิง (4-12 วินาที) โดยเว้นระยะห่างกันอย่างน้อย 30 วินาที เพื่อให้ได้เสียงตัวละครที่หลากหลาย
             duration = segment.end - segment.start
-            if not ref_segment and 4 <= duration <= 10 and len(segment.text.strip()) > 10:
-                ref_segment = segment
             if 4 <= duration <= 12 and len(segment.text.strip()) > 10:
                 if not valid_ref_segments or (segment.start - valid_ref_segments[-1].start > 30):
                     if len(valid_ref_segments) < 10: # เก็บสูงสุด 10 ตัวเลือก
                         valid_ref_segments.append(segment)
                 
         # หากไม่เจอช่วงที่ยาวพอ ให้เอาช่วงแรกมาเลย
-        if not ref_segment and segments:
-            ref_segment = segments[0]
         if not valid_ref_segments and segments:
             valid_ref_segments.append(segments[0])
             
-        ref_text = ""
         ref_candidates = {}
         choices_ref = []
         
-        if ref_segment:
-            progress(0.4, desc="🎙️ กำลังบันทึกเสียงอ้างอิง (Reference Audio) สำหรับ AI Voice...")
-            subprocess.run(["ffmpeg", "-y", "-i", audio_path, "-ss", str(ref_segment.start), "-to", str(ref_segment.end), "-c:a", "pcm_s16le", "-ar", "24000", ref_audio_path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            ref_text = ref_segment.text.strip()
         if valid_ref_segments:
             progress(0.4, desc="🎙️ กำลังบันทึกตัวเลือกเสียงอ้างอิงหลายรายการ (Auto-Reference Candidates)...")
             for i, seg in enumerate(valid_ref_segments):
@@ -376,15 +356,10 @@ Transcript Segment:
         choices = [f"{t['title']} ({t['start_time']} - {t['end_time']})" for t in all_topics]
         topics_dict = {f"{t['title']} ({t['start_time']} - {t['end_time']})": t for t in all_topics}
         
-        # ส่งคืนค่ากลับไปเก็บใน UI
-        ref_state = {"path": ref_audio_path if os.path.exists(ref_audio_path) else "", "text": ref_text}
         # ส่งคืนค่ากลับไปเก็บใน UI โดยอัปเดต Dropdown เลือกเสียง
         return f"วิเคราะห์เสร็จสิ้น พบ {len(all_topics)} หัวข้อตลอดความยาวคลิป!", gr.update(choices=choices, visible=True), topics_dict, gr.update(choices=choices_ref, value=choices_ref[0] if choices_ref else None, visible=True), ref_candidates, actual_video_path
 
-        return f"วิเคราะห์เสร็จสิ้น พบ {len(all_topics)} หัวข้อตลอดความยาวคลิป!", gr.update(choices=choices, visible=True), topics_dict, ref_state, actual_video_path
-
     except Exception as e:
-        return f"เกิดข้อผิดพลาด: {str(e)}", gr.update(choices=[], visible=False), {}, {}, ""
         return f"เกิดข้อผิดพลาด: {str(e)}", gr.update(choices=[], visible=False), {}, gr.update(choices=[], visible=False), {}, ""
     finally:
         safe_remove(original_audio_path)
@@ -395,9 +370,6 @@ Transcript Segment:
             pass
 
 # --- 5. Test Voice Cloning ---
-def test_voice_clone(ref_state, custom_ref_audio, custom_ref_text, test_script, isolate_custom_ref, progress=gr.Progress()):
-    actual_ref_audio = custom_ref_audio if custom_ref_audio else ref_state.get("path", "")
-    actual_ref_text = custom_ref_text if custom_ref_text else ref_state.get("text", "")
 def test_voice_clone(selected_auto_ref, ref_candidates_dict, custom_ref_audio, custom_ref_text, test_script, isolate_custom_ref, progress=gr.Progress()):
     auto_ref = ref_candidates_dict.get(selected_auto_ref, {}) if ref_candidates_dict and selected_auto_ref else {}
     actual_ref_audio = custom_ref_audio if custom_ref_audio else auto_ref.get("path", "")
@@ -457,8 +429,6 @@ def test_voice_clone(selected_auto_ref, ref_candidates_dict, custom_ref_audio, c
         return None, f"⚠️ เกิดข้อผิดพลาด: {str(e)}"
 
 # --- 6. Main Process Video (With Garbage Collection & Progress) ---
-def process_video_local(video_path, selected_topic_key, topics_dict, orientation, resolution, bgm_path, bgm_vol, font_color, font_size, save_to_drive, ref_state, custom_ref_audio, custom_ref_text, isolate_custom_ref, watermark_path, b_roll_path, progress=gr.Progress()):
-def process_video_local(video_path, selected_topic_key, topics_dict, orientation, resolution, bgm_path, bgm_vol, font_color, font_size, save_to_drive, selected_auto_ref, ref_candidates_dict, custom_ref_audio, custom_ref_text, isolate_custom_ref, watermark_path, b_roll_path, progress=gr.Progress()):
 def process_video_local(video_path, selected_topic_key, topics_dict, orientation, vertical_mode, resolution, bgm_path, bgm_vol, font_color, font_size, save_to_drive, selected_auto_ref, ref_candidates_dict, custom_ref_audio, custom_ref_text, isolate_custom_ref, watermark_path, b_roll_path, progress=gr.Progress()):
     if not video_path or not os.path.exists(video_path):
         return None, "ไม่พบไฟล์วิดีโอต้นฉบับ กรุณากลับไปที่ Tab 1 เพื่ออัปโหลดและวิเคราะห์วิดีโอใหม่อีกครั้ง"
@@ -481,8 +451,6 @@ def process_video_local(video_path, selected_topic_key, topics_dict, orientation
         if F5_AVAILABLE:
             progress(0.1, desc="🎙️ 1/4 กำลังโคลนเสียงพากย์ (F5-TTS Voice Cloning)...")
             
-            actual_ref_audio = custom_ref_audio if custom_ref_audio else ref_state.get("path", "")
-            actual_ref_text = custom_ref_text if custom_ref_text else ref_state.get("text", "")
             auto_ref = ref_candidates_dict.get(selected_auto_ref, {}) if ref_candidates_dict and selected_auto_ref else {}
             actual_ref_audio = custom_ref_audio if custom_ref_audio else auto_ref.get("path", "")
             actual_ref_text = custom_ref_text if custom_ref_text else auto_ref.get("text", "")
@@ -534,8 +502,6 @@ def process_video_local(video_path, selected_topic_key, topics_dict, orientation
         subs_path = generate_ass_subtitles(audio_path, font_color=font_color, font_size=font_size, progress=progress)
         temp_files.append(subs_path)
 
-        # 3. ตัดและครอปวิดีโอ (Smart Auto-Crop)
-        progress(0.5, desc="✂️ 3/4 กำลังตัดวิดีโอและวิเคราะห์ใบหน้า (Smart Auto-Crop)...")
         # 3. ตัดและปรับสัดส่วนวิดีโอ (Auto-Crop / Blur Background)
         progress(0.5, desc="✂️ 3/4 กำลังตัดและปรับสัดส่วนวิดีโอ (Auto-Crop / Blur Background)...")
         temp_subclip = f"temp_sub_{int(time.time())}.mp4"
@@ -544,21 +510,11 @@ def process_video_local(video_path, selected_topic_key, topics_dict, orientation
         subprocess.run(["ffmpeg", "-y", "-i", video_path, "-ss", start_time, "-to", end_time, "-c:v", "copy", "-c:a", "copy", temp_subclip], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         if orientation == "Vertical (9:16)":
-            crop_params = get_smart_crop_center(temp_subclip, target_ratio=9/16, progress=progress)
-            if crop_params:
-                cw, ch, cx, cy = crop_params
-                video_filter = f"crop={cw}:{ch}:{cx}:{cy}"
             if vertical_mode == "Blur Background (ขอบเบลอ)":
                 target_w = 1080 if resolution == "1080p" else (720 if resolution == "720p" else 1080)
                 target_h = 1920 if resolution == "1080p" else (1280 if resolution == "720p" else 1920)
                 video_filters_prefix = f"[0:v]scale={target_w}:{target_h}:force_original_aspect_ratio=increase,crop={target_w}:{target_h},boxblur=20:20[bg];[0:v]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[v_base]"
             else:
-                video_filter = "crop=ih*(9/16):ih"
-                
-            if resolution == "1080p":
-                video_filter += ",scale=1080:1920"
-            elif resolution == "720p":
-                video_filter += ",scale=720:1280"
                 crop_params = get_smart_crop_center(temp_subclip, target_ratio=9/16, progress=progress)
                 if crop_params:
                     cw, ch, cx, cy = crop_params
@@ -612,7 +568,6 @@ def process_video_local(video_path, selected_topic_key, topics_dict, orientation
             broll_idx = curr_idx
             curr_idx += 1
             
-        video_filters = f"[0:v]{video_filter}[v_base]"
         video_filters = video_filters_prefix
         current_v = "[v_base]"
         
@@ -730,7 +685,6 @@ with gr.Blocks(title="The Ultimate Pro AI Video Agent", theme=gr.themes.Soft()) 
         analyze_btn = gr.Button("🧠 วิเคราะห์วิดีโอด้วย Local AI", variant="primary")
         analysis_status = gr.Textbox(label="สถานะการประมวลผล", interactive=False)
         topics_state = gr.State({})
-        ref_audio_state = gr.State({})
         ref_candidates_state = gr.State({})
         current_video_path = gr.State("")
         
@@ -812,13 +766,11 @@ with gr.Blocks(title="The Ultimate Pro AI Video Agent", theme=gr.themes.Soft()) 
     analyze_btn.click(
         fn=analyze_video_chunked,
         inputs=[upload_method, video_input, drive_path_input, url_input, isolate_vocal_checkbox],
-        outputs=[analysis_status, topic_dropdown, topics_state, ref_audio_state, current_video_path]
         outputs=[analysis_status, topic_dropdown, topics_state, auto_ref_dropdown, ref_candidates_state, current_video_path]
     )
     
     test_voice_btn.click(
         fn=test_voice_clone,
-        inputs=[ref_audio_state, custom_ref_audio, custom_ref_text, test_gen_text, isolate_custom_ref_checkbox],
         inputs=[auto_ref_dropdown, ref_candidates_state, custom_ref_audio, custom_ref_text, test_gen_text, isolate_custom_ref_checkbox],
         outputs=[test_voice_output, test_voice_status]
     )
@@ -827,8 +779,6 @@ with gr.Blocks(title="The Ultimate Pro AI Video Agent", theme=gr.themes.Soft()) 
         fn=process_video_local,
         inputs=[
             current_video_path, topic_dropdown, topics_state, 
-            orientation_radio, resolution_dropdown, bgm_input, bgm_vol, sub_color, sub_size, save_drive_checkbox, 
-            ref_audio_state, custom_ref_audio, custom_ref_text, isolate_custom_ref_checkbox, watermark_input, b_roll_input
             orientation_radio, vertical_mode_radio, resolution_dropdown, bgm_input, bgm_vol, sub_color, sub_size, save_drive_checkbox, 
             auto_ref_dropdown, ref_candidates_state, custom_ref_audio, custom_ref_text, isolate_custom_ref_checkbox, watermark_input, b_roll_input
         ],
