@@ -28,6 +28,11 @@ except ImportError:
     F5_AVAILABLE = False
     print("F5-TTS-TH is not installed. Please install it using: pip install f5-tts-th")
 
+DRIVE_BASE_DIR = "/content/drive/MyDrive/AI_Videos"
+PROFILES_DIR = os.path.join(DRIVE_BASE_DIR, "Voice_Profiles")
+PROFILES_META = os.path.join(PROFILES_DIR, "profiles.json")
+SETTINGS_FILE = os.path.join(DRIVE_BASE_DIR, "settings.json")
+
 # --- 1. Helper Functions & Cleanup ---
 def format_time(seconds):
     return time.strftime('%H:%M:%S', time.gmtime(seconds))
@@ -78,23 +83,33 @@ def get_drive_videos():
     
     return sorted(videos)
 
+def get_saved_profiles():
+    if not os.path.exists(PROFILES_META):
+        return []
+    try:
+        with open(PROFILES_META, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return list(data.keys())
+    except:
+        return []
+
 def mount_google_drive():
     try:
         # ตรวจสอบก่อนว่ามีการเมานท์ Drive ไว้แล้วหรือไม่
         if os.path.exists('/content/drive'):
-            os.makedirs('/content/drive/MyDrive/AI_Videos', exist_ok=True)
-            return "✅ Google Drive ถูกเชื่อมต่อไว้แล้ว! วิดีโอจะถูกบันทึกที่โฟลเดอร์ AI_Videos", gr.update(choices=get_drive_videos())
+            os.makedirs(DRIVE_BASE_DIR, exist_ok=True)
+            return "✅ Google Drive ถูกเชื่อมต่อไว้แล้ว! วิดีโอจะถูกบันทึกที่โฟลเดอร์ AI_Videos", gr.update(choices=get_drive_videos()), gr.update(choices=get_saved_profiles())
             
         from google.colab import drive
         drive.mount('/content/drive')
-        os.makedirs('/content/drive/MyDrive/AI_Videos', exist_ok=True)
-        return "✅ เชื่อมต่อ Google Drive สำเร็จ! วิดีโอจะถูกบันทึกที่โฟลเดอร์ AI_Videos", gr.update(choices=get_drive_videos())
+        os.makedirs(DRIVE_BASE_DIR, exist_ok=True)
+        return "✅ เชื่อมต่อ Google Drive สำเร็จ! วิดีโอจะถูกบันทึกที่โฟลเดอร์ AI_Videos", gr.update(choices=get_drive_videos()), gr.update(choices=get_saved_profiles())
     except ImportError:
-        return "⚠️ ไม่สามารถเชื่อมต่อ Google Drive ได้ (ฟีเจอร์นี้ใช้ได้บน Google Colab เท่านั้น)", gr.update()
+        return "⚠️ ไม่สามารถเชื่อมต่อ Google Drive ได้ (ฟีเจอร์นี้ใช้ได้บน Google Colab เท่านั้น)", gr.update(), gr.update()
     except Exception as e:
         if "'NoneType' object has no attribute 'kernel'" in str(e):
-            return "⚠️ กรุณาเมานท์ Google Drive จากเซลล์ในสมุดโน้ต (Notebook) โดยตรงก่อน (ไม่สามารถเมานท์ผ่านปุ่มนี้ได้เมื่อรันด้วยคำสั่ง python app.py)", gr.update()
-        return f"⚠️ เกิดข้อผิดพลาด: {str(e)}", gr.update()
+            return "⚠️ กรุณาเมานท์ Google Drive จากเซลล์ในสมุดโน้ต (Notebook) โดยตรงก่อน (ไม่สามารถเมานท์ผ่านปุ่มนี้ได้เมื่อรันด้วยคำสั่ง python app.py)", gr.update(), gr.update()
+        return f"⚠️ เกิดข้อผิดพลาด: {str(e)}", gr.update(), gr.update()
 
 # --- 2. Smart Auto-Crop (Face Tracking) ---
 def get_smart_crop_center(video_path, target_ratio=9/16, progress=gr.Progress()):
@@ -679,7 +694,101 @@ def process_video_local(video_path, selected_topic_key, topics_dict, orientation
         for file in temp_files:
             safe_remove(file)
 
-# --- 7. Gallery Management ---
+# --- 7. Settings & Profile Management (Google Drive) ---
+def save_voice_profile(profile_name, selected_auto_ref, ref_candidates_dict, custom_ref_audio, custom_ref_text):
+    if not os.path.exists('/content/drive'):
+        return "⚠️ กรุณาเชื่อมต่อ Google Drive ก่อนบันทึกโปรไฟล์", gr.update()
+    if not profile_name or not profile_name.strip():
+        return "⚠️ กรุณาตั้งชื่อโปรไฟล์", gr.update()
+    
+    auto_ref = ref_candidates_dict.get(selected_auto_ref, {}) if ref_candidates_dict and selected_auto_ref else {}
+    actual_ref_audio = custom_ref_audio if custom_ref_audio else auto_ref.get("path", "")
+    actual_ref_text = custom_ref_text if custom_ref_text else auto_ref.get("text", "")
+    
+    if not actual_ref_audio or not actual_ref_text:
+        return "⚠️ ไม่พบข้อมูลเสียงต้นแบบ กรุณาอัปโหลดหรือเลือกเสียงก่อน", gr.update()
+    
+    os.makedirs(PROFILES_DIR, exist_ok=True)
+    
+    ext = os.path.splitext(actual_ref_audio)[1] or ".wav"
+    new_audio_name = f"profile_{int(time.time())}{ext}"
+    new_audio_path = os.path.join(PROFILES_DIR, new_audio_name)
+    try:
+        shutil.copy(actual_ref_audio, new_audio_path)
+    except Exception as e:
+        return f"⚠️ เกิดข้อผิดพลาดในการคัดลอกไฟล์เสียง: {str(e)}", gr.update()
+        
+    profiles = {}
+    if os.path.exists(PROFILES_META):
+        try:
+            with open(PROFILES_META, "r", encoding="utf-8") as f:
+                profiles = json.load(f)
+        except:
+            pass
+    
+    profiles[profile_name.strip()] = {
+        "path": new_audio_path,
+        "text": actual_ref_text
+    }
+    
+    with open(PROFILES_META, "w", encoding="utf-8") as f:
+        json.dump(profiles, f, ensure_ascii=False, indent=2)
+        
+    return f"✅ บันทึกโปรไฟล์ '{profile_name}' สำเร็จ!", gr.update(choices=get_saved_profiles())
+
+def load_voice_profile(profile_name):
+    if not profile_name or not os.path.exists(PROFILES_META):
+        return None, ""
+    try:
+        with open(PROFILES_META, "r", encoding="utf-8") as f:
+            profiles = json.load(f)
+        if profile_name in profiles:
+            return profiles[profile_name]["path"], profiles[profile_name]["text"]
+    except:
+        pass
+    return None, ""
+
+def save_settings(orientation, vertical_mode, resolution, bgm_vol, sub_color, sub_size, isolate_custom_ref):
+    if not os.path.exists('/content/drive'):
+        return "⚠️ กรุณาเชื่อมต่อ Google Drive ก่อนบันทึกการตั้งค่า"
+    
+    os.makedirs(DRIVE_BASE_DIR, exist_ok=True)
+    settings = {
+        "orientation": orientation,
+        "vertical_mode": vertical_mode,
+        "resolution": resolution,
+        "bgm_vol": bgm_vol,
+        "sub_color": sub_color,
+        "sub_size": sub_size,
+        "isolate_custom_ref": isolate_custom_ref
+    }
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(settings, f, ensure_ascii=False, indent=2)
+        return "✅ บันทึกการตั้งค่าลง Google Drive สำเร็จ!"
+    except Exception as e:
+        return f"⚠️ เกิดข้อผิดพลาด: {str(e)}"
+
+def load_settings():
+    if not os.path.exists(SETTINGS_FILE):
+        return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), "⚠️ ไม่พบไฟล์การตั้งค่าใน Google Drive"
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            s = json.load(f)
+        return (
+            gr.update(value=s.get("orientation", "Vertical (9:16)")),
+            gr.update(value=s.get("vertical_mode", "Smart Auto-Crop (เต็มจอ)")),
+            gr.update(value=s.get("resolution", "1080p")),
+            gr.update(value=s.get("bgm_vol", 10)),
+            gr.update(value=s.get("sub_color", "Yellow")),
+            gr.update(value=s.get("sub_size", 85)),
+            gr.update(value=s.get("isolate_custom_ref", False)),
+            "✅ โหลดการตั้งค่าจาก Google Drive สำเร็จ!"
+        )
+    except Exception as e:
+        return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), f"⚠️ เกิดข้อผิดพลาดในการโหลด: {str(e)}"
+
+# --- 8. Gallery Management ---
 def get_generated_videos():
     videos = []
     for f in os.listdir('.'):
@@ -768,12 +877,26 @@ with gr.Blocks(title="The Ultimate Pro AI Video Agent") as app:
                 bgm_vol = gr.Slider(label="ความดังเพลงพื้นหลัง BGM (%)", minimum=1, maximum=100, value=10, step=1)
                 
             with gr.Row():
+                save_settings_btn = gr.Button("💾 บันทึกการตั้งค่าลง Drive", size="sm")
+                load_settings_btn = gr.Button("📂 โหลดการตั้งค่า", size="sm")
+                settings_status = gr.Textbox(label="สถานะการตั้งค่า", interactive=False, scale=2)
+                
+            with gr.Row():
                 watermark_input = gr.Image(label="🖼️ โลโก้ลายน้ำ (Watermark)", type="filepath")
                 b_roll_input = gr.Video(label="🎞️ อัปโหลด B-Roll (ภาพแทรก)")
                 
             custom_ref_audio = gr.Audio(label="อัปโหลดเสียงต้นแบบ (Custom Voice Cloning)", type="filepath")
             isolate_custom_ref_checkbox = gr.Checkbox(label="🧹 ลบเสียงดนตรี/เสียงรบกวนในเสียงต้นแบบ", value=False)
             custom_ref_text = gr.Textbox(label="ข้อความที่พูดในเสียงต้นแบบ (ภาษาไทย)")
+            
+            with gr.Accordion("💾 ระบบบันทึกโปรไฟล์เสียง (Voice Profiles)", open=False):
+                with gr.Row():
+                    profile_name_input = gr.Textbox(label="ตั้งชื่อเสียงพากย์ (เช่น เสียงนุ่ม, พี่เอ)", scale=2)
+                    save_profile_btn = gr.Button("💾 บันทึกเป็นโปรไฟล์ใหม่", scale=1)
+                with gr.Row():
+                    saved_profile_dropdown = gr.Dropdown(label="📂 เลือกเสียงพากย์ที่บันทึกไว้", choices=get_saved_profiles(), scale=2)
+                    refresh_profile_btn = gr.Button("🔄 รีเฟรชรายการ", scale=1)
+                profile_status = gr.Textbox(label="สถานะโปรไฟล์เสียง", interactive=False)
             
             with gr.Row():
                 test_gen_text = gr.Textbox(label="ข้อความสำหรับทดสอบเสียง (Test Script)", value="สวัสดีครับ นี่คือเสียงทดสอบระบบโคลนเสียงครับ", scale=3)
@@ -806,7 +929,7 @@ with gr.Blocks(title="The Ultimate Pro AI Video Agent") as app:
         video_list.change(fn=lambda x: x, inputs=[video_list], outputs=[download_file])
         delete_btn.click(fn=delete_video, inputs=[video_list], outputs=[manage_status, video_list])
         
-    drive_btn.click(fn=mount_google_drive, outputs=[drive_status, drive_path_input])
+    drive_btn.click(fn=mount_google_drive, outputs=[drive_status, drive_path_input, saved_profile_dropdown])
     
     refresh_drive_btn.click(fn=lambda: gr.update(choices=get_drive_videos()), outputs=[drive_path_input])
 
@@ -829,6 +952,31 @@ with gr.Blocks(title="The Ultimate Pro AI Video Agent") as app:
         outputs=[analysis_status, topic_dropdown, topics_state, auto_ref_dropdown, ref_candidates_state, current_video_path]
     )
     
+    save_settings_btn.click(
+        fn=save_settings,
+        inputs=[orientation_radio, vertical_mode_radio, resolution_dropdown, bgm_vol, sub_color, sub_size, isolate_custom_ref_checkbox],
+        outputs=[settings_status]
+    )
+    
+    load_settings_btn.click(
+        fn=load_settings,
+        outputs=[orientation_radio, vertical_mode_radio, resolution_dropdown, bgm_vol, sub_color, sub_size, isolate_custom_ref_checkbox, settings_status]
+    )
+    
+    save_profile_btn.click(
+        fn=save_voice_profile,
+        inputs=[profile_name_input, auto_ref_dropdown, ref_candidates_state, custom_ref_audio, custom_ref_text],
+        outputs=[profile_status, saved_profile_dropdown]
+    )
+    
+    saved_profile_dropdown.change(
+        fn=load_voice_profile,
+        inputs=[saved_profile_dropdown],
+        outputs=[custom_ref_audio, custom_ref_text]
+    )
+    
+    refresh_profile_btn.click(fn=lambda: gr.update(choices=get_saved_profiles()), outputs=[saved_profile_dropdown])
+
     test_voice_btn.click(
         fn=test_voice_clone,
         inputs=[auto_ref_dropdown, ref_candidates_state, custom_ref_audio, custom_ref_text, test_gen_text, isolate_custom_ref_checkbox],
