@@ -14,7 +14,7 @@ if __name__ == "__main__":
     run_cmd("pip install -r requirements.txt")
     
     print("Pre-downloading VIZINTZOR/F5-TTS-TH-V2 model...")
-    # ใช้ Python API เพื่อหลีกเลี่ยงปัญหาหน้าต่างแจ้งเตือน (Interactive Prompt [Y/n]) ที่ทำให้ Colab ค้าง
-    run_cmd("python -c \"from huggingface_hub import snapshot_download; snapshot_download('VIZINTZOR/F5-TTS-TH-V2')\"")
+    # เปิดโหมด hf_transfer เพื่อเร่งความเร็ว x10 และข้ามไฟล์ Optimizer/Checkpoint เก่าที่ไม่ได้ใช้ (ลดขนาดจาก 35GB ให้เหลือเท่าที่จำเป็น)
+    run_cmd("python -c \"import os; os.environ['HF_HUB_ENABLE_HF_TRANSFER'] = '1'; from huggingface_hub import snapshot_download; snapshot_download('VIZINTZOR/F5-TTS-TH-V2', ignore_patterns=['*optimizer*', '*optim*', '*checkpoint*'])\"")
     
     print("Setup complete! You can now run `python app.py`.")
