@@ -215,7 +215,6 @@ def analyze_video_chunked(upload_method, video_path, drive_path, url_input, prog
     
     try:
         progress(0.05, desc="🎵 1/3 กำลังสกัดเสียงจากวิดีโอ...")
-        subprocess.run(["ffmpeg", "-y", "-i", video_path, "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", audio_path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["ffmpeg", "-y", "-i", actual_video_path, "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", audio_path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
         device = "cuda" if torch.cuda.is_available() else "cpu"
