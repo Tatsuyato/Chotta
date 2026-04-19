@@ -149,6 +149,7 @@ def generate_ass_subtitles(audio_path, font_color="Yellow", font_size=85, outlin
     whisper_model = WhisperModel("small", device=device, compute_type=compute_type)
     
     segments, info = whisper_model.transcribe(audio_path, beam_size=5, word_timestamps=True)
+    total_duration = info.duration
     
     # กำหนดรหัสสี BGR (ASS format is AABBGGRR but usually just BBGGRR in V4+)
     # Yellow = 00FFFF, White = FFFFFF, Green = 00FF00
@@ -178,6 +179,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         text = segment.text.strip()
         ass_content += f"Dialogue: 0,{start},{end},TikTok,,0,0,0,,{text}\n"
         
+        percent = segment.end / total_duration if total_duration > 0 else 0
+        progress(percent, desc=f"📝 สร้างซับไตเติ้ลคำต่อคำ... {format_time(segment.end)} / {format_time(total_duration)}")
+        
     del whisper_model
     gc.collect()
     if torch.cuda.is_available():
@@ -194,8 +198,22 @@ def analyze_video_chunked(upload_method, video_path, drive_path, url_input, prog
     actual_video_path = None
     if upload_method == "วางลิงก์จากเว็บ (URL)" and url_input and url_input.strip():
         progress(0, desc="🌐 กำลังดาวน์โหลดวิดีโอจากลิงก์...")
+        
+        last_update = [0]
+        def yt_dlp_hook(d):
+            if d['status'] == 'downloading':
+                now = time.time()
+                if now - last_update[0] > 1.0: # อัปเดต UI ทุกๆ 1 วินาทีเพื่อไม่ให้ Gradio ค้าง
+                    progress(0, desc=f"🌐 กำลังดาวน์โหลดวิดีโอ... {d.get('_percent_str', '').strip()} ({d.get('_speed_str', '').strip()})")
+                    last_update[0] = now
+                    
         output_filename = f"dl_video_{int(time.time())}.mp4"
-        ydl_opts = {'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best', 'outtmpl': output_filename, 'quiet': True}
+        ydl_opts = {
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best', 
+            'outtmpl': output_filename, 
+            'quiet': True,
+            'progress_hooks': [yt_dlp_hook]
+        }
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url_input.strip()])
@@ -225,13 +243,20 @@ def analyze_video_chunked(upload_method, video_path, drive_path, url_input, prog
         
         progress(0.2, desc="📝 กำลังถอดเสียง (Transcription) อาจใช้เวลานานสำหรับคลิป 1 ชม...")
         segments_generator, info = whisper_model.transcribe(audio_path, beam_size=5)
-        segments = list(segments_generator)
         
         transcript = ""
+        segments = []
         ref_segment = None
+        total_duration = info.duration
         
-        for segment in segments:
+        for segment in segments_generator:
             transcript += f"[{format_time(segment.start)} - {format_time(segment.end)}] {segment.text}\n"
+            segments.append(segment)
+            
+            # อัปเดตสถานะให้ผู้ใช้เห็นแบบเรียลไทม์ (วินาทีต่อวินาที)
+            percent = segment.end / total_duration if total_duration > 0 else 0
+            progress(0.2 + (0.2 * percent), desc=f"📝 กำลังถอดเสียง... {format_time(segment.end)} / {format_time(total_duration)}")
+            
             # หาช่วงที่ยาว 4-10 วินาทีเพื่อใช้เป็น Reference สำหรับ F5-TTS
             duration = segment.end - segment.start
             if not ref_segment and 4 <= duration <= 10 and len(segment.text.strip()) > 10:
