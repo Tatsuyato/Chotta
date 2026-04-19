@@ -43,23 +43,44 @@ def safe_remove(path):
     except Exception as e:
         print(f"Failed to remove {path}: {e}")
 
+def get_drive_videos():
+    drive_path = "/content/drive/MyDrive"
+    if not os.path.exists(drive_path):
+        return []
+    
+    video_exts = ('.mp4', '.mov', '.avi', '.mkv', '.webm')
+    videos = []
+    
+    try:
+        for root, dirs, files in os.walk(drive_path):
+            depth = root[len(drive_path):].count(os.sep)
+            if depth > 1: # สแกนแค่ MyDrive และโฟลเดอร์ย่อย 1 ชั้น เพื่อไม่ให้ระบบโหลดนานเกินไป
+                dirs.clear()
+            for f in files:
+                if f.lower().endswith(video_exts):
+                    videos.append(os.path.join(root, f))
+    except Exception:
+        pass
+    
+    return sorted(videos)
+
 def mount_google_drive():
     try:
         # ตรวจสอบก่อนว่ามีการเมานท์ Drive ไว้แล้วหรือไม่
         if os.path.exists('/content/drive'):
             os.makedirs('/content/drive/MyDrive/AI_Videos', exist_ok=True)
-            return "✅ Google Drive ถูกเชื่อมต่อไว้แล้ว! วิดีโอจะถูกบันทึกที่โฟลเดอร์ AI_Videos"
+            return "✅ Google Drive ถูกเชื่อมต่อไว้แล้ว! วิดีโอจะถูกบันทึกที่โฟลเดอร์ AI_Videos", gr.update(choices=get_drive_videos())
             
         from google.colab import drive
         drive.mount('/content/drive')
         os.makedirs('/content/drive/MyDrive/AI_Videos', exist_ok=True)
-        return "✅ เชื่อมต่อ Google Drive สำเร็จ! วิดีโอจะถูกบันทึกที่โฟลเดอร์ AI_Videos"
+        return "✅ เชื่อมต่อ Google Drive สำเร็จ! วิดีโอจะถูกบันทึกที่โฟลเดอร์ AI_Videos", gr.update(choices=get_drive_videos())
     except ImportError:
-        return "⚠️ ไม่สามารถเชื่อมต่อ Google Drive ได้ (ฟีเจอร์นี้ใช้ได้บน Google Colab เท่านั้น)"
+        return "⚠️ ไม่สามารถเชื่อมต่อ Google Drive ได้ (ฟีเจอร์นี้ใช้ได้บน Google Colab เท่านั้น)", gr.update()
     except Exception as e:
         if "'NoneType' object has no attribute 'kernel'" in str(e):
-            return "⚠️ กรุณาเมานท์ Google Drive จากเซลล์ในสมุดโน้ต (Notebook) โดยตรงก่อน (ไม่สามารถเมานท์ผ่านปุ่มนี้ได้เมื่อรันด้วยคำสั่ง python app.py)"
-        return f"⚠️ เกิดข้อผิดพลาด: {str(e)}"
+            return "⚠️ กรุณาเมานท์ Google Drive จากเซลล์ในสมุดโน้ต (Notebook) โดยตรงก่อน (ไม่สามารถเมานท์ผ่านปุ่มนี้ได้เมื่อรันด้วยคำสั่ง python app.py)", gr.update()
+        return f"⚠️ เกิดข้อผิดพลาด: {str(e)}", gr.update()
 
 # --- 2. Smart Auto-Crop (Face Tracking) ---
 def get_smart_crop_center(video_path, target_ratio=9/16, progress=gr.Progress()):
@@ -171,6 +192,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 # --- 4. Advanced Analysis (Chunking) ---
 def analyze_video_chunked(video_path, drive_path, url_input, progress=gr.Progress()):
     if url_input and url_input.strip():
+def analyze_video_chunked(upload_method, video_path, drive_path, url_input, progress=gr.Progress()):
+    actual_video_path = None
+    if upload_method == "วางลิงก์จากเว็บ (URL)" and url_input and url_input.strip():
         progress(0, desc="🌐 กำลังดาวน์โหลดวิดีโอจากลิงก์...")
         output_filename = f"dl_video_{int(time.time())}.mp4"
         ydl_opts = {'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best', 'outtmpl': output_filename, 'quiet': True}
@@ -180,11 +204,15 @@ def analyze_video_chunked(video_path, drive_path, url_input, progress=gr.Progres
             actual_video_path = output_filename
         except Exception as e:
             return f"เกิดข้อผิดพลาดในการดาวน์โหลดวิดีโอ: {str(e)}", gr.update(choices=[], visible=False), {}, {}, ""
+    elif upload_method == "เลือกจาก Google Drive":
+        actual_video_path = drive_path.strip() if drive_path and drive_path.strip() else None
     else:
         actual_video_path = drive_path.strip() if drive_path and drive_path.strip() else video_path
+        actual_video_path = video_path
         
     if not actual_video_path or not os.path.exists(actual_video_path):
         return "กรุณาอัปโหลดวิดีโอ, ระบุพาธไฟล์ หรือใส่ลิงก์ให้ถูกต้อง", gr.update(choices=[], visible=False), {}, {}, ""
+        return "กรุณาอัปโหลดวิดีโอ, ระบุพาธไฟล์ หรือใส่ลิงก์ให้ถูกต้องตามช่องทางที่เลือก", gr.update(choices=[], visible=False), {}, {}, ""
     
     audio_path = f"temp_audio_{int(time.time())}.wav"
     ref_audio_path = f"auto_ref_{int(time.time())}.wav"
@@ -565,8 +593,24 @@ with gr.Blocks(title="The Ultimate Pro AI Video Agent", theme=gr.themes.Soft()) 
         with gr.Row():
             video_input = gr.Video(label="อัปโหลดวิดีโอจากเครื่อง")
             with gr.Column():
-                drive_path_input = gr.Textbox(label="📂 ใส่พาธไฟล์จาก Google Drive (เช่น /content/drive/MyDrive/ep1.mp4)")
+                with gr.Row():
+                    drive_path_input = gr.Dropdown(label="📂 เลือกไฟล์จาก Google Drive", choices=get_drive_videos(), allow_custom_value=True, scale=4)
+                    refresh_drive_btn = gr.Button("🔄 โหลดชื่อไฟล์", scale=1)
                 url_input = gr.Textbox(label="🌐 หรือวางลิงก์วิดีโอจากเว็บ (YouTube, TikTok ฯลฯ)")
+        upload_method = gr.Radio(
+            label="เลือกวิธีการนำเข้าวิดีโอ", 
+            choices=["อัปโหลดจากเครื่อง (Local)", "เลือกจาก Google Drive", "วางลิงก์จากเว็บ (URL)"], 
+            value="อัปโหลดจากเครื่อง (Local)"
+        )
+        gr.Markdown("💡 **ทริคสำหรับไฟล์ขนาดใหญ่ (1 ชม.+)**: แนะนำให้เลือกช่องทาง **\"เลือกจาก Google Drive\"** จะรวดเร็วและเสถียรกว่ามาก!")
+        
+        video_input = gr.Video(label="อัปโหลดวิดีโอจากเครื่อง", visible=True)
+        
+        with gr.Row(visible=False) as drive_group:
+            drive_path_input = gr.Dropdown(label="📂 เลือกไฟล์จาก Google Drive", choices=get_drive_videos(), allow_custom_value=True, scale=4)
+            refresh_drive_btn = gr.Button("🔄 โหลดชื่อไฟล์", scale=1)
+            
+        url_input = gr.Textbox(label="🌐 วางลิงก์วิดีโอจากเว็บ (YouTube, TikTok ฯลฯ)", visible=False)
             
         analyze_btn = gr.Button("🧠 วิเคราะห์วิดีโอด้วย Local AI", variant="primary")
         analysis_status = gr.Textbox(label="สถานะการประมวลผล", interactive=False)
@@ -626,9 +670,27 @@ with gr.Blocks(title="The Ultimate Pro AI Video Agent", theme=gr.themes.Soft()) 
         video_list.change(fn=lambda x: x, inputs=[video_list], outputs=[download_file])
         delete_btn.click(fn=delete_video, inputs=[video_list], outputs=[manage_status, video_list])
         
+    drive_btn.click(fn=mount_google_drive, outputs=[drive_status, drive_path_input])
+    
+    refresh_drive_btn.click(fn=lambda: gr.update(choices=get_drive_videos()), outputs=[drive_path_input])
+
+    def toggle_upload_ui(method):
+        return (
+            gr.update(visible=(method == "อัปโหลดจากเครื่อง (Local)")),
+            gr.update(visible=(method == "เลือกจาก Google Drive")),
+            gr.update(visible=(method == "วางลิงก์จากเว็บ (URL)"))
+        )
+        
+    upload_method.change(
+        fn=toggle_upload_ui,
+        inputs=[upload_method],
+        outputs=[video_input, drive_group, url_input]
+    )
+
     analyze_btn.click(
         fn=analyze_video_chunked,
         inputs=[video_input, drive_path_input, url_input],
+        inputs=[upload_method, video_input, drive_path_input, url_input],
         outputs=[analysis_status, topic_dropdown, topics_state, ref_audio_state, current_video_path]
     )
     
